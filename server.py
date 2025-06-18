@@ -174,9 +174,11 @@ class ModelManager:
         model_lower = clean_model.lower()
         
         if 'haiku' in model_lower:
-            return self.config.small_model
+            # Return the clean model name without prefix
+            return self._clean_model_name(self.config.small_model)
         elif 'sonnet' in model_lower or 'opus' in model_lower:
-            return self.config.big_model
+            # Return the clean model name without prefix  
+            return self._clean_model_name(self.config.big_model)
         
         return clean_model
 
@@ -626,6 +628,30 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
 def convert_litellm_to_anthropic(litellm_response, original_request: MessagesRequest) -> MessagesResponse:
     """Convert LiteLLM (Gemini) response back to Anthropic API format."""
     try:
+        # 🔍 DEBUG: Print LiteLLM response structure
+        if config.debug_requests:
+            logger.info("🔄 RESPONSE CONVERSION DEBUG")
+            logger.info("-" * 50)
+            logger.info(f"📦 Response Type: {type(litellm_response)}")
+            logger.info(f"📦 Response Dir: {[attr for attr in dir(litellm_response) if not attr.startswith('_')]}")
+            
+            if hasattr(litellm_response, 'choices'):
+                logger.info(f"📋 Choices: {len(litellm_response.choices) if litellm_response.choices else 0}")
+                if litellm_response.choices:
+                    choice = litellm_response.choices[0]
+                    logger.info(f"📋 Choice Type: {type(choice)}")
+                    logger.info(f"📋 Choice Dir: {[attr for attr in dir(choice) if not attr.startswith('_')]}")
+                    if hasattr(choice, 'message'):
+                        message = choice.message
+                        logger.info(f"💬 Message Type: {type(message)}")
+                        logger.info(f"💬 Message Dir: {[attr for attr in dir(message) if not attr.startswith('_')]}")
+                        logger.info(f"💬 Message Content: {getattr(message, 'content', 'NO CONTENT ATTR')}")
+            
+            if hasattr(litellm_response, 'usage'):
+                logger.info(f"📊 Usage: {litellm_response.usage}")
+            
+            logger.info("-" * 50)
+        
         # Extract response data safely
         response_id = f"msg_{uuid.uuid4()}"
         content_text = ""
@@ -720,9 +746,12 @@ def convert_litellm_to_anthropic(litellm_response, original_request: MessagesReq
         else:
             stop_reason = Constants.STOP_END_TURN
 
+        # Clean model name to avoid duplicate prefixes
+        clean_model_name = model_manager._clean_model_name(original_request.original_model or original_request.model)
+        
         return MessagesResponse(
             id=response_id,
-            model=original_request.original_model or original_request.model,
+            model=clean_model_name,
             role=Constants.ROLE_ASSISTANT,
             content=content_blocks,
             stop_reason=stop_reason,
@@ -735,9 +764,11 @@ def convert_litellm_to_anthropic(litellm_response, original_request: MessagesReq
         
     except Exception as e:
         logger.error(f"Error converting response: {e}")
+        # Clean model name for error response too
+        clean_model_name = model_manager._clean_model_name(original_request.original_model or original_request.model)
         return MessagesResponse(
             id=f"msg_error_{uuid.uuid4()}",
-            model=original_request.original_model or original_request.model,
+            model=clean_model_name,
             role=Constants.ROLE_ASSISTANT, 
             content=[ContentBlockText(type=Constants.CONTENT_TEXT, text="Response conversion error")],
             stop_reason=Constants.STOP_ERROR,
