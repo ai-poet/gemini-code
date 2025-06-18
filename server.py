@@ -1108,7 +1108,7 @@ async def log_requests(request: Request, call_next):
 @app.middleware("http")
 async def authenticate_api_key(request: Request, call_next):
     # Skip authentication for health check and root endpoints
-    if request.url.path in ["/", "/health", "/test-connection"]:
+    if request.url.path in ["/", "/health"]:
         response = await call_next(request)
         return response
     
@@ -1398,116 +1398,6 @@ async def health_check():
             }
         )
 
-@app.get("/test-connection")
-async def test_connection():
-    """Test API connectivity to Gemini"""
-    try:
-        # Build test request parameters
-        test_params = {
-            "model": "gemini/gemini-2.5-pro",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 5
-        }
-        
-        # 🔧 Set correct authentication for Gemini API
-        # Gemini API requires x-goog-api-key header, not Authorization Bearer
-        if test_params["model"].startswith("gemini/"):
-            test_params["extra_headers"] = {
-                "x-goog-api-key": config.gemini_api_key
-            }
-        else:
-            test_params["api_key"] = config.gemini_api_key
-        
-        # Add custom base URL if configured
-        if config.gemini_base_url:
-            test_params["base_url"] = config.gemini_base_url
-        
-        # 🔍 DEBUG: Print test connection details
-        if config.debug_requests:
-            logger.info("🧪 TEST CONNECTION DEBUG")
-            logger.info("-" * 40)
-            logger.info(f"🎯 Test Model: {test_params['model']}")
-            logger.info(f"🌐 Target URL: {config.gemini_base_url or 'Default Gemini API'}")
-            
-            # Show authentication method
-            if test_params.get("extra_headers") and "x-goog-api-key" in test_params.get("extra_headers", {}):
-                logger.info(f"🔑 Auth Method: x-goog-api-key header (Gemini native)")
-                logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
-            elif test_params.get("api_key"):
-                logger.info(f"🔑 Auth Method: Authorization Bearer (OpenAI-style)")
-                logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
-            
-            # Print sanitized test parameters
-            debug_params = {k: v for k, v in test_params.items() if k not in ['api_key']}
-            if 'extra_headers' in debug_params and 'x-goog-api-key' in debug_params['extra_headers']:
-                debug_params['extra_headers'] = {
-                    **debug_params['extra_headers'],
-                    'x-goog-api-key': f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
-                }
-            if test_params.get("api_key"):
-                debug_params['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
-            
-            logger.info("📋 Test Parameters:")
-            logger.info(json.dumps(debug_params, indent=2, ensure_ascii=False))
-            logger.info("-" * 40)
-        
-        # Simple test request to verify API connectivity
-        test_response = await litellm.acompletion(**test_params)
-        
-        # 🔍 DEBUG: Print test response details
-        if config.debug_requests:
-            logger.info("✅ TEST CONNECTION SUCCESS")
-            logger.info(f"📨 Response ID: {getattr(test_response, 'id', 'unknown')}")
-            if hasattr(test_response, 'choices') and test_response.choices:
-                content = getattr(test_response.choices[0].message, 'content', 'No content')
-                logger.info(f"💬 Response Content: {content[:100]}{'...' if len(str(content)) > 100 else ''}")
-        
-        return {
-            "status": "success",
-            "message": "Successfully connected to Gemini API",
-            "model_used": "gemini/gemini-2.5-pro",
-            "base_url": config.gemini_base_url or "default",
-            "timestamp": datetime.now().isoformat(),
-            "response_id": getattr(test_response, 'id', 'unknown')
-        }
-        
-    except litellm.exceptions.APIError as e:
-        logger.error(f"API connectivity test failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "failed",
-                "error_type": "API Error",
-                "message": classify_gemini_error(str(e)),
-                "base_url": config.gemini_base_url or "default",
-                "timestamp": datetime.now().isoformat(),
-                "suggestions": [
-                    "Check your GEMINI_API_KEY is valid",
-                    "Verify your API key has the necessary permissions",
-                    "Check if you have reached rate limits",
-                    "Verify GEMINI_BASE_URL if using custom endpoint"
-                ]
-            }
-        )
-    except Exception as e:
-        logger.error(f"Connection test failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "failed",
-                "error_type": "Connection Error", 
-                "message": classify_gemini_error(str(e)),
-                "base_url": config.gemini_base_url or "default",
-                "timestamp": datetime.now().isoformat(),
-                "suggestions": [
-                    "Check your internet connection",
-                    "Verify firewall settings allow HTTPS traffic",
-                    "Try again in a few moments",
-                    "Verify GEMINI_BASE_URL if using custom endpoint"
-                ]
-            }
-        )
-
 @app.get("/")
 async def root():
     return {
@@ -1531,8 +1421,7 @@ async def root():
         "endpoints": {
             "messages": "/v1/messages",
             "count_tokens": "/v1/messages/count_tokens", 
-            "health": "/health",
-            "test_connection": "/test-connection"
+            "health": "/health"
         },
         "authentication": {
             "required": bool(config.auth_token),

@@ -112,12 +112,6 @@ GET /health
 # 无需身份验证
 ```
 
-### 连接测试
-```bash
-GET /test-connection  
-# 无需身份验证
-```
-
 ## 使用示例
 
 ### cURL 示例
