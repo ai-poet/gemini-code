@@ -66,8 +66,8 @@ class Config:
         # Gemini API base URL (optional)
         self.gemini_base_url = os.environ.get("GEMINI_BASE_URL")
         
-        self.big_model = os.environ.get("BIG_MODEL", "gemini-2.5-pro")
-        self.small_model = os.environ.get("SMALL_MODEL", "gemini-2.5-pro")
+        self.big_model = os.environ.get("BIG_MODEL", "gemini/gemini-2.5-pro")
+        self.small_model = os.environ.get("SMALL_MODEL", "gemini/gemini-2.5-pro")
         self.host = os.environ.get("HOST", "0.0.0.0")
         self.port = int(os.environ.get("PORT", "8082"))
         self.log_level = os.environ.get("LOG_LEVEL", "WARNING")
@@ -139,8 +139,10 @@ class ModelManager:
     
     def _add_env_models(self):
         for model in [self.config.big_model, self.config.small_model]:
-            if model.startswith("gemini") and model not in self._gemini_models:
-                self._gemini_models.add(model)
+            # Clean model name to remove prefix before adding to set
+            clean_model = self._clean_model_name(model)
+            if clean_model.startswith("gemini") and clean_model not in self._gemini_models:
+                self._gemini_models.add(clean_model)
     
     @property
     def gemini_models(self) -> List[str]:
@@ -1432,7 +1434,7 @@ async def test_connection():
         return {
             "status": "success",
             "message": "Successfully connected to Gemini API",
-            "model_used": "gemini-2.5-pro",
+            "model_used": "gemini/gemini-2.5-pro",
             "base_url": config.gemini_base_url or "default",
             "timestamp": datetime.now().isoformat(),
             "response_id": getattr(test_response, 'id', 'unknown')
@@ -1592,8 +1594,8 @@ def main():
         print("Optional environment variables:")
         print("  AUTH_TOKEN - Your API key for x-api-key header authentication (optional)")
         print("  GEMINI_BASE_URL - Custom Gemini API base URL (optional)")
-        print(f"  BIG_MODEL - Big model name (default: gemini-2.5-pro)")
-        print(f"  SMALL_MODEL - Small model name (default: gemini-2.5-pro)")
+        print(f"  BIG_MODEL - Big model name (default: gemini/gemini-2.5-pro)")
+        print(f"  SMALL_MODEL - Small model name (default: gemini/gemini-2.5-pro)")
         print(f"  HOST - Server host (default: 0.0.0.0)")
         print(f"  PORT - Server port (default: 8082)")
         print(f"  LOG_LEVEL - Logging level (default: WARNING)")
