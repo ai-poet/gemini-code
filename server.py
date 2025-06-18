@@ -60,8 +60,14 @@ class Config:
         if not self.gemini_api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables")
         
-        self.big_model = os.environ.get("BIG_MODEL", "gemini-1.5-pro-latest")
-        self.small_model = os.environ.get("SMALL_MODEL", "gemini-1.5-flash-latest")
+        # Auth token for x-api-key authentication (optional)
+        self.auth_token = os.environ.get("AUTH_TOKEN")
+        
+        # Gemini API base URL (optional)
+        self.gemini_base_url = os.environ.get("GEMINI_BASE_URL")
+        
+        self.big_model = os.environ.get("BIG_MODEL", "gemini-2.5-pro")
+        self.small_model = os.environ.get("SMALL_MODEL", "gemini-2.5-flash")
         self.host = os.environ.get("HOST", "0.0.0.0")
         self.port = int(os.environ.get("PORT", "8082"))
         self.log_level = os.environ.get("LOG_LEVEL", "WARNING")
@@ -85,9 +91,20 @@ class Config:
             return False
         return True
 
+    def verify_auth_token(self, api_key: str) -> bool:
+        """验证x-api-key请求头，如果未配置auth_token则跳过验证"""
+        if not self.auth_token:
+            return True  # 未配置token则跳过验证
+        
+        if not api_key:
+            return False
+        
+        return api_key == self.auth_token
+
 try:
     config = Config()
-    print(f"✅ Configuration loaded: API_KEY={'*' * 20}..., BIG_MODEL='{config.big_model}', SMALL_MODEL='{config.small_model}'")
+    auth_status = "Configured" if config.auth_token else "Not Set (Optional)"
+    print(f"✅ Configuration loaded: GEMINI_API_KEY={'*' * 20}..., AUTH_TOKEN={auth_status}, BIG_MODEL='{config.big_model}', SMALL_MODEL='{config.small_model}'")
 except Exception as e:
     print(f"🔴 Configuration Error: {e}")
     sys.exit(1)
@@ -96,20 +113,18 @@ except Exception as e:
 litellm.request_timeout = config.request_timeout
 litellm.num_retries = config.max_retries
 
+# Set Gemini base URL if configured
+if config.gemini_base_url:
+    litellm.api_base = config.gemini_base_url
+    logger.info(f"Using custom Gemini base URL: {config.gemini_base_url}")
+
 # Model Management
 class ModelManager:
     def __init__(self, config):
         self.config = config
         self.base_gemini_models = [
-            "gemini-1.5-pro-latest",
-            "gemini-1.5-pro-preview-0514",
-            "gemini-1.5-flash-latest", 
-            "gemini-1.5-flash-preview-0514",
-            "gemini-pro",
-            "gemini-2.5-pro-preview-05-06",
-            "gemini-2.5-flash-preview-04-17",
-            "gemini-2.0-flash-exp",
-            "gemini-exp-1206"
+            "gemini-2.5-flash",
+            "gemini-2.5-pro"
         ]
         self._gemini_models = set(self.base_gemini_models)
         self._add_env_models()
@@ -577,6 +592,10 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         isinstance(anthropic_request.metadata["user_id"], str)):
         litellm_request["user"] = anthropic_request.metadata["user_id"]
 
+    # Add custom base URL if configured
+    if config.gemini_base_url:
+        litellm_request["base_url"] = config.gemini_base_url
+
     return litellm_request
 
 # Response conversion
@@ -1030,6 +1049,56 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     return response
 
+# API Key Authentication Middleware
+@app.middleware("http")
+async def authenticate_api_key(request: Request, call_next):
+    # Skip authentication for health check and root endpoints
+    if request.url.path in ["/", "/health", "/test-connection"]:
+        response = await call_next(request)
+        return response
+    
+    # Skip authentication for OPTIONS requests (CORS preflight)
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        return response
+    
+    # 如果未配置auth_token，则跳过验证
+    if not config.auth_token:
+        response = await call_next(request)
+        return response
+    
+    # Get x-api-key header
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "Missing x-api-key header. Please provide a valid API key in the x-api-key header."
+                }
+            }
+        )
+    
+    # Validate API key
+    if not config.verify_auth_token(api_key):
+        logger.warning(f"Invalid API key attempt from {request.client.host if request.client else 'unknown'}")
+        return JSONResponse(
+            status_code=401,
+            content={
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "Invalid API key. Please check your x-api-key header."
+                }
+            }
+        )
+    
+    logger.debug("API key validation successful")
+    response = await call_next(request)
+    return response
+
 # Enhanced streaming retry logic for the main endpoint
 @app.post("/v1/messages")
 async def create_message(request: MessagesRequest, raw_request: Request):
@@ -1193,6 +1262,9 @@ async def health_check():
             "timestamp": datetime.now().isoformat(),
             "version": "2.5.0",
             "gemini_api_configured": bool(config.gemini_api_key),
+            "gemini_base_url_configured": bool(config.gemini_base_url),
+            "gemini_base_url": config.gemini_base_url or "default",
+            "auth_token_configured": bool(config.auth_token),
             "api_key_valid": config.validate_api_key(),
             "streaming_config": {
                 "force_disabled": config.force_disable_streaming,
@@ -1218,18 +1290,26 @@ async def health_check():
 async def test_connection():
     """Test API connectivity to Gemini"""
     try:
+        # Build test request parameters
+        test_params = {
+            "model": "gemini/gemini-2.5-flash",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 5,
+            "api_key": config.gemini_api_key
+        }
+        
+        # Add custom base URL if configured
+        if config.gemini_base_url:
+            test_params["base_url"] = config.gemini_base_url
+        
         # Simple test request to verify API connectivity
-        test_response = await litellm.acompletion(
-            model="gemini/gemini-1.5-flash-latest",
-            messages=[{"role": "user", "content": "Hello"}],
-            max_tokens=5,
-            api_key=config.gemini_api_key
-        )
+        test_response = await litellm.acompletion(**test_params)
         
         return {
             "status": "success",
             "message": "Successfully connected to Gemini API",
-            "model_used": "gemini-1.5-flash-latest",
+            "model_used": "gemini-2.5-flash",
+            "base_url": config.gemini_base_url or "default",
             "timestamp": datetime.now().isoformat(),
             "response_id": getattr(test_response, 'id', 'unknown')
         }
@@ -1242,11 +1322,13 @@ async def test_connection():
                 "status": "failed",
                 "error_type": "API Error",
                 "message": classify_gemini_error(str(e)),
+                "base_url": config.gemini_base_url or "default",
                 "timestamp": datetime.now().isoformat(),
                 "suggestions": [
                     "Check your GEMINI_API_KEY is valid",
                     "Verify your API key has the necessary permissions",
-                    "Check if you have reached rate limits"
+                    "Check if you have reached rate limits",
+                    "Verify GEMINI_BASE_URL if using custom endpoint"
                 ]
             }
         )
@@ -1258,11 +1340,13 @@ async def test_connection():
                 "status": "failed",
                 "error_type": "Connection Error", 
                 "message": classify_gemini_error(str(e)),
+                "base_url": config.gemini_base_url or "default",
                 "timestamp": datetime.now().isoformat(),
                 "suggestions": [
                     "Check your internet connection",
                     "Verify firewall settings allow HTTPS traffic",
-                    "Try again in a few moments"
+                    "Try again in a few moments",
+                    "Verify GEMINI_BASE_URL if using custom endpoint"
                 ]
             }
         )
@@ -1278,6 +1362,9 @@ async def root():
             "available_models": model_manager.gemini_models[:5],
             "max_tokens_limit": config.max_tokens_limit,
             "api_key_configured": bool(config.gemini_api_key),
+            "gemini_base_url_configured": bool(config.gemini_base_url),
+            "gemini_base_url": config.gemini_base_url or "default",
+            "auth_token_configured": bool(config.auth_token),
             "streaming": {
                 "force_disabled": config.force_disable_streaming,
                 "emergency_disabled": config.emergency_disable_streaming,
@@ -1289,6 +1376,11 @@ async def root():
             "count_tokens": "/v1/messages/count_tokens", 
             "health": "/health",
             "test_connection": "/test-connection"
+        },
+        "authentication": {
+            "required": bool(config.auth_token),
+            "method": "x-api-key header" if config.auth_token else "disabled",
+            "note": "All API endpoints require a valid API key in x-api-key header" if config.auth_token else "Authentication is disabled"
         }
     }
 
@@ -1334,13 +1426,25 @@ def validate_startup():
     """Validate configuration and connectivity on startup"""
     print("🔍 Validating startup configuration...")
     
-    # Check API key
+    # Check Gemini API key
     if not config.gemini_api_key:
         print("🔴 FATAL: GEMINI_API_KEY is not set")
         return False
     
     if not config.validate_api_key():
-        print("⚠️ WARNING: API key format validation failed")
+        print("⚠️ WARNING: Gemini API key format validation failed")
+    
+    # Check Gemini Base URL (optional)
+    if config.gemini_base_url:
+        print(f"✅ Gemini Base URL: {config.gemini_base_url}")
+    else:
+        print("ℹ️ Gemini Base URL: Using default endpoint")
+    
+    # Check Auth Token (optional)
+    if config.auth_token:
+        print("✅ Auth Token: Configured - Authentication enabled")
+    else:
+        print("ℹ️ Auth Token: Not set - Authentication disabled")
     
     # Check network connectivity (basic)
     try:
@@ -1362,8 +1466,10 @@ def main():
         print("  GEMINI_API_KEY - Your Google Gemini API key")
         print("")
         print("Optional environment variables:")
-        print(f"  BIG_MODEL - Big model name (default: gemini-1.5-pro-latest)")
-        print(f"  SMALL_MODEL - Small model name (default: gemini-1.5-flash-latest)")
+        print("  AUTH_TOKEN - Your API key for x-api-key header authentication (optional)")
+        print("  GEMINI_BASE_URL - Custom Gemini API base URL (optional)")
+        print(f"  BIG_MODEL - Big model name (default: gemini-2.5-pro)")
+        print(f"  SMALL_MODEL - Small model name (default: gemini-2.5-flash)")
         print(f"  HOST - Server host (default: 0.0.0.0)")
         print(f"  PORT - Server port (default: 8082)")
         print(f"  LOG_LEVEL - Logging level (default: WARNING)")
@@ -1373,6 +1479,11 @@ def main():
         print(f"  MAX_STREAMING_RETRIES - Maximum streaming retries (default: 2)")
         print(f"  FORCE_DISABLE_STREAMING - Force disable streaming (default: false)")
         print(f"  EMERGENCY_DISABLE_STREAMING - Emergency disable streaming (default: false)")
+        print("")
+        print("Authentication:")
+        print("  If AUTH_TOKEN is set, all API endpoints require a valid API key")
+        print("  Format: x-api-key: your-auth-token")
+        print("  If AUTH_TOKEN is not set, authentication is disabled")
         print("")
         print("Available Gemini models:")
         for model in model_manager.gemini_models:
@@ -1387,6 +1498,11 @@ def main():
     # Configuration summary
     print("🚀 Enhanced Gemini-to-Claude API Proxy v2.5.0")
     print(f"✅ Configuration loaded successfully")
+    print(f"   Gemini API Key: Configured")
+    gemini_base_url_status = config.gemini_base_url or "Default"
+    print(f"   Gemini Base URL: {gemini_base_url_status}")
+    auth_status = "Configured" if config.auth_token else "Not Set (Optional)"
+    print(f"   Auth Token: {auth_status}") 
     print(f"   Big Model: {config.big_model}")
     print(f"   Small Model: {config.small_model}")
     print(f"   Available Models: {len(model_manager.gemini_models)}")
@@ -1398,6 +1514,8 @@ def main():
     print(f"   Emergency Disable Streaming: {config.emergency_disable_streaming}")
     print(f"   Log Level: {config.log_level}")
     print(f"   Server: {config.host}:{config.port}")
+    auth_note = "Required (x-api-key header)" if config.auth_token else "Disabled"
+    print(f"   Authentication: {auth_note}")
     print("")
 
     # Start server
