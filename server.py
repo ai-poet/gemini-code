@@ -116,7 +116,6 @@ litellm.num_retries = config.max_retries
 # Set Gemini base URL if configured
 if config.gemini_base_url:
     litellm.api_base = config.gemini_base_url
-    logger.info(f"Using custom Gemini base URL: {config.gemini_base_url}")
 
 # Model Management
 class ModelManager:
