@@ -30,7 +30,7 @@ GEMINI_BASE_URL=https://your-custom-gemini-endpoint.com
 
 # 模型配置
 BIG_MODEL=gemini-2.5-pro
-SMALL_MODEL=gemini-2.5-flash
+SMALL_MODEL=gemini-2.5-pro
 
 # 服务器配置
 HOST=0.0.0.0
@@ -206,3 +206,12 @@ python server.py
 - **DEBUG_REQUESTS=true**: 显示发送到Gemini的完整请求参数和响应信息
 - **LITELLM_DEBUG=true**: 启用LiteLLM库的内部调试，显示HTTP请求详情
 - 调试日志会显示实际的API端点URL、参数、模型映射等信息
+- 自动检测并显示认证方式：`x-goog-api-key`（Gemini原生）或 `Authorization Bearer`（OpenAI风格）
+
+### 认证方式说明
+
+该代理服务会自动为不同的API使用正确的认证方式：
+- **Gemini模型**: 使用 `x-goog-api-key` 头部（Google原生认证）
+- **其他模型**: 使用 `Authorization: Bearer` 头部（OpenAI风格认证）
+
+这确保了与各种API端点的兼容性，包括官方API和第三方代理服务。

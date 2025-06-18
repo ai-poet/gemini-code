@@ -67,7 +67,7 @@ class Config:
         self.gemini_base_url = os.environ.get("GEMINI_BASE_URL")
         
         self.big_model = os.environ.get("BIG_MODEL", "gemini-2.5-pro")
-        self.small_model = os.environ.get("SMALL_MODEL", "gemini-2.5-flash")
+        self.small_model = os.environ.get("SMALL_MODEL", "gemini-2.5-pro")
         self.host = os.environ.get("HOST", "0.0.0.0")
         self.port = int(os.environ.get("PORT", "8082"))
         self.log_level = os.environ.get("LOG_LEVEL", "WARNING")
@@ -132,7 +132,6 @@ class ModelManager:
     def __init__(self, config):
         self.config = config
         self.base_gemini_models = [
-            "gemini-2.5-flash",
             "gemini-2.5-pro"
         ]
         self._gemini_models = set(self.base_gemini_models)
@@ -604,6 +603,20 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     # Add custom base URL if configured
     if config.gemini_base_url:
         litellm_request["base_url"] = config.gemini_base_url
+
+    # 🔧 Set correct authentication for Gemini API
+    # Gemini API requires x-goog-api-key header, not Authorization Bearer
+    if litellm_request["model"].startswith("gemini/"):
+        # Remove the api_key parameter to avoid Authorization header
+        # and use extra_headers to set the correct Gemini auth header
+        litellm_request["extra_headers"] = {
+            "x-goog-api-key": config.gemini_api_key
+        }
+        # Remove api_key to prevent Authorization header
+        if "api_key" in litellm_request:
+            del litellm_request["api_key"]
+    else:
+        litellm_request["api_key"] = config.gemini_api_key
 
     return litellm_request
 
@@ -1125,7 +1138,20 @@ async def create_message(request: MessagesRequest, raw_request: Request):
 
         # Convert request
         litellm_request = convert_anthropic_to_litellm(request)
-        litellm_request["api_key"] = config.gemini_api_key
+        
+        # 🔧 Set correct authentication for Gemini API
+        # Gemini API requires x-goog-api-key header, not Authorization Bearer
+        if litellm_request["model"].startswith("gemini/"):
+            # Remove the api_key parameter to avoid Authorization header
+            # and use extra_headers to set the correct Gemini auth header
+            litellm_request["extra_headers"] = {
+                "x-goog-api-key": config.gemini_api_key
+            }
+            # Remove api_key to prevent Authorization header
+            if "api_key" in litellm_request:
+                del litellm_request["api_key"]
+        else:
+            litellm_request["api_key"] = config.gemini_api_key
         
         # 🔍 DEBUG: Print detailed request information (only if debug is enabled)
         if config.debug_requests:
@@ -1134,7 +1160,15 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             logger.info("=" * 80)
             logger.info(f"📍 Target Model: {litellm_request.get('model')}")
             logger.info(f"🌐 Base URL: {config.gemini_base_url or 'Default (Google)'}")
-            logger.info(f"🔑 API Key: {'*' * 20}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            
+            # Show authentication method
+            if litellm_request.get("extra_headers") and "x-goog-api-key" in litellm_request.get("extra_headers", {}):
+                logger.info(f"🔑 Auth Method: x-goog-api-key header (Gemini native)")
+                logger.info(f"🔑 API Key: {'*' * 20}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            elif litellm_request.get("api_key"):
+                logger.info(f"🔑 Auth Method: Authorization Bearer (OpenAI-style)")
+                logger.info(f"🔑 API Key: {'*' * 20}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            
             logger.info(f"💬 Messages Count: {len(litellm_request.get('messages', []))}")
             logger.info(f"🎛️ Max Tokens: {litellm_request.get('max_tokens')}")
             logger.info(f"🌡️ Temperature: {litellm_request.get('temperature')}")
@@ -1150,8 +1184,14 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                     logger.info(f"   Tool {i+1}: {tool_name}")
             
             # Print sanitized request for debugging (removing sensitive data)
-            debug_request = {k: v for k, v in litellm_request.items() if k != 'api_key'}
-            debug_request['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+            debug_request = {k: v for k, v in litellm_request.items() if k not in ['api_key']}
+            if 'extra_headers' in debug_request and 'x-goog-api-key' in debug_request['extra_headers']:
+                debug_request['extra_headers'] = {
+                    **debug_request['extra_headers'],
+                    'x-goog-api-key': f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+                }
+            if litellm_request.get("api_key"):
+                debug_request['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
             
             logger.info("📋 Complete Request Parameters:")
             logger.info(json.dumps(debug_request, indent=2, ensure_ascii=False))
@@ -1331,11 +1371,19 @@ async def test_connection():
     try:
         # Build test request parameters
         test_params = {
-            "model": "gemini/gemini-2.5-flash",
+            "model": "gemini/gemini-2.5-pro",
             "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 5,
-            "api_key": config.gemini_api_key
+            "max_tokens": 5
         }
+        
+        # 🔧 Set correct authentication for Gemini API
+        # Gemini API requires x-goog-api-key header, not Authorization Bearer
+        if test_params["model"].startswith("gemini/"):
+            test_params["extra_headers"] = {
+                "x-goog-api-key": config.gemini_api_key
+            }
+        else:
+            test_params["api_key"] = config.gemini_api_key
         
         # Add custom base URL if configured
         if config.gemini_base_url:
@@ -1347,11 +1395,25 @@ async def test_connection():
             logger.info("-" * 40)
             logger.info(f"🎯 Test Model: {test_params['model']}")
             logger.info(f"🌐 Target URL: {config.gemini_base_url or 'Default Gemini API'}")
-            logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            
+            # Show authentication method
+            if test_params.get("extra_headers") and "x-goog-api-key" in test_params.get("extra_headers", {}):
+                logger.info(f"🔑 Auth Method: x-goog-api-key header (Gemini native)")
+                logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            elif test_params.get("api_key"):
+                logger.info(f"🔑 Auth Method: Authorization Bearer (OpenAI-style)")
+                logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
             
             # Print sanitized test parameters
-            debug_params = {k: v for k, v in test_params.items() if k != 'api_key'}
-            debug_params['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+            debug_params = {k: v for k, v in test_params.items() if k not in ['api_key']}
+            if 'extra_headers' in debug_params and 'x-goog-api-key' in debug_params['extra_headers']:
+                debug_params['extra_headers'] = {
+                    **debug_params['extra_headers'],
+                    'x-goog-api-key': f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+                }
+            if test_params.get("api_key"):
+                debug_params['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+            
             logger.info("📋 Test Parameters:")
             logger.info(json.dumps(debug_params, indent=2, ensure_ascii=False))
             logger.info("-" * 40)
@@ -1370,7 +1432,7 @@ async def test_connection():
         return {
             "status": "success",
             "message": "Successfully connected to Gemini API",
-            "model_used": "gemini-2.5-flash",
+            "model_used": "gemini-2.5-pro",
             "base_url": config.gemini_base_url or "default",
             "timestamp": datetime.now().isoformat(),
             "response_id": getattr(test_response, 'id', 'unknown')
@@ -1531,7 +1593,7 @@ def main():
         print("  AUTH_TOKEN - Your API key for x-api-key header authentication (optional)")
         print("  GEMINI_BASE_URL - Custom Gemini API base URL (optional)")
         print(f"  BIG_MODEL - Big model name (default: gemini-2.5-pro)")
-        print(f"  SMALL_MODEL - Small model name (default: gemini-2.5-flash)")
+        print(f"  SMALL_MODEL - Small model name (default: gemini-2.5-pro)")
         print(f"  HOST - Server host (default: 0.0.0.0)")
         print(f"  PORT - Server port (default: 8082)")
         print(f"  LOG_LEVEL - Logging level (default: WARNING)")
