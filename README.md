@@ -46,6 +46,10 @@ MAX_STREAMING_RETRIES=12
 # 流式响应配置
 FORCE_DISABLE_STREAMING=false
 EMERGENCY_DISABLE_STREAMING=false
+
+# 调试选项
+DEBUG_REQUESTS=false
+LITELLM_DEBUG=false
 ```
 
 ## 身份验证
@@ -182,10 +186,23 @@ print(response.json())
 4. **认证问题**: 如果不需要认证，可以不设置 `AUTH_TOKEN` 环境变量
 5. **自定义端点问题**: 如果使用自定义Gemini端点，确保 `GEMINI_BASE_URL` 设置正确
 
-## 获取帮助
+## 调试功能
 
-运行以下命令查看完整帮助：
+### 启用详细调试
 
 ```bash
-python server.py --help
+# 启用请求/响应详细日志
+export DEBUG_REQUESTS=true
+
+# 启用LiteLLM内部调试
+export LITELLM_DEBUG=true
+
+# 重启服务查看详细日志
+python server.py
 ```
+
+### 调试信息说明
+
+- **DEBUG_REQUESTS=true**: 显示发送到Gemini的完整请求参数和响应信息
+- **LITELLM_DEBUG=true**: 启用LiteLLM库的内部调试，显示HTTP请求详情
+- 调试日志会显示实际的API端点URL、参数、模型映射等信息

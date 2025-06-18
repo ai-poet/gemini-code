@@ -82,6 +82,10 @@ class Config:
         self.force_disable_streaming = os.environ.get("FORCE_DISABLE_STREAMING", "false").lower() == "true"
         self.emergency_disable_streaming = os.environ.get("EMERGENCY_DISABLE_STREAMING", "false").lower() == "true"
         
+        # Debug settings
+        self.debug_requests = os.environ.get("DEBUG_REQUESTS", "false").lower() == "true"
+        self.litellm_debug = os.environ.get("LITELLM_DEBUG", "false").lower() == "true"
+        
     def validate_api_key(self):
         """Basic API key validation"""
         if not self.gemini_api_key:
@@ -116,6 +120,12 @@ litellm.num_retries = config.max_retries
 # Set Gemini base URL if configured
 if config.gemini_base_url:
     litellm.api_base = config.gemini_base_url
+
+# Enable LiteLLM debug mode if requested
+if config.litellm_debug:
+    litellm.set_verbose = True
+    litellm._turn_on_debug()
+    print("🔍 LiteLLM debug mode enabled")
 
 # Model Management
 class ModelManager:
@@ -1117,6 +1127,36 @@ async def create_message(request: MessagesRequest, raw_request: Request):
         litellm_request = convert_anthropic_to_litellm(request)
         litellm_request["api_key"] = config.gemini_api_key
         
+        # 🔍 DEBUG: Print detailed request information (only if debug is enabled)
+        if config.debug_requests:
+            logger.info("=" * 80)
+            logger.info("🚀 GEMINI API REQUEST DEBUG")
+            logger.info("=" * 80)
+            logger.info(f"📍 Target Model: {litellm_request.get('model')}")
+            logger.info(f"🌐 Base URL: {config.gemini_base_url or 'Default (Google)'}")
+            logger.info(f"🔑 API Key: {'*' * 20}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            logger.info(f"💬 Messages Count: {len(litellm_request.get('messages', []))}")
+            logger.info(f"🎛️ Max Tokens: {litellm_request.get('max_tokens')}")
+            logger.info(f"🌡️ Temperature: {litellm_request.get('temperature')}")
+            logger.info(f"📡 Stream: {litellm_request.get('stream')}")
+            
+            if config.gemini_base_url:
+                logger.info(f"🔗 Custom Base URL in request: {litellm_request.get('base_url', 'Not set')}")
+                
+            if litellm_request.get('tools'):
+                logger.info(f"🛠️ Tools: {len(litellm_request.get('tools', []))} tools configured")
+                for i, tool in enumerate(litellm_request.get('tools', [])):
+                    tool_name = tool.get('function', {}).get('name', 'Unknown')
+                    logger.info(f"   Tool {i+1}: {tool_name}")
+            
+            # Print sanitized request for debugging (removing sensitive data)
+            debug_request = {k: v for k, v in litellm_request.items() if k != 'api_key'}
+            debug_request['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+            
+            logger.info("📋 Complete Request Parameters:")
+            logger.info(json.dumps(debug_request, indent=2, ensure_ascii=False))
+            logger.info("=" * 80)
+        
         # Log request details
         num_tools = len(request.tools) if request.tools else 0
         log_request_beautifully(
@@ -1301,8 +1341,31 @@ async def test_connection():
         if config.gemini_base_url:
             test_params["base_url"] = config.gemini_base_url
         
+        # 🔍 DEBUG: Print test connection details
+        if config.debug_requests:
+            logger.info("🧪 TEST CONNECTION DEBUG")
+            logger.info("-" * 40)
+            logger.info(f"🎯 Test Model: {test_params['model']}")
+            logger.info(f"🌐 Target URL: {config.gemini_base_url or 'Default Gemini API'}")
+            logger.info(f"🔑 API Key: {'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}")
+            
+            # Print sanitized test parameters
+            debug_params = {k: v for k, v in test_params.items() if k != 'api_key'}
+            debug_params['api_key'] = f"{'*' * 15}...{config.gemini_api_key[-4:] if len(config.gemini_api_key) >= 4 else '****'}"
+            logger.info("📋 Test Parameters:")
+            logger.info(json.dumps(debug_params, indent=2, ensure_ascii=False))
+            logger.info("-" * 40)
+        
         # Simple test request to verify API connectivity
         test_response = await litellm.acompletion(**test_params)
+        
+        # 🔍 DEBUG: Print test response details
+        if config.debug_requests:
+            logger.info("✅ TEST CONNECTION SUCCESS")
+            logger.info(f"📨 Response ID: {getattr(test_response, 'id', 'unknown')}")
+            if hasattr(test_response, 'choices') and test_response.choices:
+                content = getattr(test_response.choices[0].message, 'content', 'No content')
+                logger.info(f"💬 Response Content: {content[:100]}{'...' if len(str(content)) > 100 else ''}")
         
         return {
             "status": "success",
@@ -1479,6 +1542,10 @@ def main():
         print(f"  FORCE_DISABLE_STREAMING - Force disable streaming (default: false)")
         print(f"  EMERGENCY_DISABLE_STREAMING - Emergency disable streaming (default: false)")
         print("")
+        print("Debug options:")
+        print("  DEBUG_REQUESTS - Enable detailed request/response logging (default: false)")
+        print("  LITELLM_DEBUG - Enable LiteLLM debug mode (default: false)")
+        print("")
         print("Authentication:")
         print("  If AUTH_TOKEN is set, all API endpoints require a valid API key")
         print("  Format: x-api-key: your-auth-token")
@@ -1515,6 +1582,10 @@ def main():
     print(f"   Server: {config.host}:{config.port}")
     auth_note = "Required (x-api-key header)" if config.auth_token else "Disabled"
     print(f"   Authentication: {auth_note}")
+    debug_status = "Enabled" if config.debug_requests else "Disabled"
+    litellm_debug_status = "Enabled" if config.litellm_debug else "Disabled"
+    print(f"   Debug Requests: {debug_status}")
+    print(f"   LiteLLM Debug: {litellm_debug_status}")
     print("")
 
     # Start server
